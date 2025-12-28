@@ -1,0 +1,28 @@
+/* Galactic Brain - Cosmic Trivia Styles */
+
+/* Base Styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+/* Custom font support (Fredoka is loaded via HTML) */
+.font-fredoka {
+  font-family: 'Fredoka', sans-serif;
+}
+
+/* Smooth animations */
+*, *::before, *::after {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
