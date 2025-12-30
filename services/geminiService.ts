@@ -1,8 +1,9 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { PlanetType, TriviaQuestion, Difficulty } from "../types";
+import { PlanetType, Difficulty, MissionData } from "../types";
 
-// Initialize Gemini Client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Helper to silence TS errors. 
+// Vite replaces 'process.env.API_KEY' with the string value at build time.
+declare const process: any;
 
 // Subtopics to ensure variety (simulating a large database of 500+ questions)
 const SUBTOPICS: Record<PlanetType, string[]> = {
@@ -31,31 +32,53 @@ const getDifficultyInstruction = (difficulty: Difficulty): string => {
   }
 }
 
-// Generate a list of questions for a mission
-export const generateTrivia = async (category: PlanetType, difficulty: Difficulty, count: number): Promise<TriviaQuestion[]> => {
+// Helper to safely get API key 
+const getApiKey = (): string | undefined => {
+  try {
+    // Direct access allows Vite to perform the string replacement of 'process.env.API_KEY'
+    // Do NOT check typeof process here, as it will fail in browser.
+    return process.env.API_KEY; 
+  } catch (e) {
+    return undefined;
+  }
+};
+
+// Generate a full mission with topic, fact, and questions
+export const generateMission = async (category: PlanetType, difficulty: Difficulty, count: number): Promise<MissionData> => {
+  const apiKey = getApiKey();
+
+  if (!apiKey) {
+    throw new Error("API Key is missing. Please create a .env file with API_KEY=your_key and restart the server.");
+  }
+
+  // Initialize client only when needed
+  const ai = new GoogleGenAI({ apiKey });
+
   const subtopic = getRandomSubtopic(category);
   const difficultyPrompt = getDifficultyInstruction(difficulty);
   
-  // Ensure count is at least 1, default to 3 if something goes wrong upstream
   const safeCount = Math.max(1, count || 3);
 
   const systemInstruction = `You are a friendly educational game host for children. 
-  Generate exactly ${safeCount} distinct multiple-choice trivia questions about "${subtopic}" (Category: ${category}). 
+  Create a mission about "${subtopic}" (Category: ${category}).
   ${difficultyPrompt}
-  The tone should be fun and energetic.
-  Ensure each 'explanation' is a fun fact related to the answer.
-  Avoid repeating common questions; try to find interesting, unique facts.`;
+  
+  First, provide a "Mission Briefing" which is ONE interesting, educational fact about the topic that a child might not know.
+  Then, generate exactly ${safeCount} multiple-choice trivia questions about the topic.
+  Ensure each 'explanation' in the questions is a fun fact related to the answer.`;
 
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Generate exactly ${safeCount} trivia questions about ${subtopic}.`,
+      contents: `Generate a mission for ${subtopic}.`,
       config: {
         systemInstruction,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
+            topic: { type: Type.STRING, description: "The specific subtopic chosen" },
+            fact: { type: Type.STRING, description: "A fun educational fact about the topic for the mission briefing" },
             questions: {
                 type: Type.ARRAY,
                 items: {
@@ -74,6 +97,7 @@ export const generateTrivia = async (category: PlanetType, difficulty: Difficult
                 }
             }
           },
+          required: ["topic", "fact", "questions"]
         },
       },
     });
@@ -81,58 +105,49 @@ export const generateTrivia = async (category: PlanetType, difficulty: Difficult
     const jsonText = response.text;
     if (!jsonText) throw new Error("No response from AI");
 
-    const data = JSON.parse(jsonText);
+    const data = JSON.parse(jsonText) as MissionData;
     
     // Fallback if AI returns fewer than asked
-    let questions = data.questions as TriviaQuestion[];
-    if (questions.length < safeCount) {
-        console.warn(`Gemini returned ${questions.length} questions, expected ${safeCount}. Filling with duplicates.`);
-        while(questions.length < safeCount) {
-            questions.push(questions[0]); 
+    if (data.questions.length < safeCount) {
+        while(data.questions.length < safeCount) {
+            data.questions.push(data.questions[0]); 
         }
     }
     
-    return questions;
+    return data;
 
   } catch (error) {
-    console.error("Error generating trivia:", error);
+    console.error("Error generating mission:", error);
     
-    // Enhanced Fallback Pool
-    const fallbackPool = [
-        {
-          question: "Which planet is known as the Red Planet?",
-          options: ["Earth", "Mars", "Jupiter", "Venus"],
-          correctAnswerIndex: 1,
-          explanation: "Mars looks red because of rusty iron in the ground!"
-        },
-        {
-          question: "How many legs does a spider have?",
-          options: ["Six", "Eight", "Ten", "Four"],
-          correctAnswerIndex: 1,
-          explanation: "Spiders are arachnids, so they always have 8 legs!"
-        },
-        {
-           question: "What do bees make?",
-           options: ["Milk", "Honey", "Jam", "Chocolate"],
-           correctAnswerIndex: 1,
-           explanation: "Bees make honey from the nectar of flowers!"
-        },
-        {
-            question: "Which animal is the tallest in the world?",
-            options: ["Elephant", "Giraffe", "Zebra", "Lion"],
+    // Check if it's the specific API key error to re-throw
+    if ((error as Error).message.includes("API Key")) {
+        throw error;
+    }
+
+    // Enhanced Fallback for other errors (network, etc)
+    return {
+        topic: "Space Exploration",
+        fact: "Did you know that space is completely silent because there is no air to carry sound waves?",
+        questions: [
+            {
+            question: "Which planet is known as the Red Planet?",
+            options: ["Earth", "Mars", "Jupiter", "Venus"],
             correctAnswerIndex: 1,
-            explanation: "Giraffes are the tallest land animals, thanks to their long necks!"
-        },
-        {
-            question: "What freezes to become ice?",
-            options: ["Water", "Sand", "Air", "Fire"],
-            correctAnswerIndex: 0,
-            explanation: "When water gets very cold (0°C), it turns into solid ice!"
-        }
-    ];
-    
-    // Return a random slice of fallback questions
-    const shuffled = fallbackPool.sort(() => 0.5 - Math.random());
-    return shuffled.slice(0, safeCount);
+            explanation: "Mars looks red because of rusty iron in the ground!"
+            },
+            {
+            question: "How many legs does a spider have?",
+            options: ["Six", "Eight", "Ten", "Four"],
+            correctAnswerIndex: 1,
+            explanation: "Spiders are arachnids, so they always have 8 legs!"
+            },
+            {
+            question: "What do bees make?",
+            options: ["Milk", "Honey", "Jam", "Chocolate"],
+            correctAnswerIndex: 1,
+            explanation: "Bees make honey from the nectar of flowers!"
+            }
+        ].slice(0, safeCount)
+    };
   }
 };

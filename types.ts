@@ -2,6 +2,7 @@ export enum GameState {
   MENU = 'MENU',
   MAP = 'MAP',
   TRAVELING = 'TRAVELING',
+  DISCOVERY = 'DISCOVERY',
   TRIVIA = 'TRIVIA',
   GAME_OVER = 'GAME_OVER',
   VICTORY = 'VICTORY'
@@ -33,6 +34,12 @@ export interface TriviaQuestion {
   options: string[];
   correctAnswerIndex: number;
   explanation: string; // Fun fact
+}
+
+export interface MissionData {
+  topic: string;
+  fact: string;
+  questions: TriviaQuestion[];
 }
 
 export interface PlayerStats {

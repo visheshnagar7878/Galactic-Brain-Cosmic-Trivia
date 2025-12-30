@@ -3,10 +3,10 @@ import StarField from './components/StarField';
 import Planet from './components/Planet';
 import RocketShip from './components/RocketShip';
 import Button from './components/Button';
-import { GameState, PlanetType, PlanetData, PlayerStats, TriviaQuestion, Difficulty } from './types';
-import { generateTrivia } from './services/geminiService';
+import { GameState, PlanetType, PlanetData, PlayerStats, Difficulty, MissionData } from './types';
+import { generateMission } from './services/geminiService';
 import { playSoundEffect, playBackgroundMusic, toggleMute } from './services/audioService';
-import { Trophy, Fuel, Map as MapIcon, RotateCcw, Volume2, Sparkles, BrainCircuit, Shield, Swords, Skull, Check, X, VolumeX, Home } from 'lucide-react';
+import { Trophy, Fuel, RotateCcw, Volume2, Shield, Swords, Skull, Check, X, VolumeX, Home, BookOpen, PlayCircle, StopCircle } from 'lucide-react';
 
 // Planet Configuration
 const PLANETS_INITIAL: PlanetData[] = [
@@ -26,7 +26,8 @@ interface TravelingScreenProps {
 
 const TravelingScreen: React.FC<TravelingScreenProps> = ({ travelPhase, targetPlanet }) => {
     // Generate streaks for warp effect using useMemo (now safe inside a component)
-    const streaks = React.useMemo(() => Array.from({ length: 20 }).map((_, i) => ({
+    // We add explicit types to (_, i) to prevent TS errors
+    const streaks = React.useMemo(() => Array.from({ length: 20 }).map((_: unknown, i: number) => ({
       left: `${Math.random() * 100}%`,
       delay: `${Math.random() * 0.5}s`,
       duration: `${0.3 + Math.random() * 0.5}s`
@@ -95,12 +96,13 @@ const App: React.FC = () => {
   const [planets, setPlanets] = useState<PlanetData[]>(PLANETS_INITIAL);
   const [loading, setLoading] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
   // Travel Animation State
   const [travelPhase, setTravelPhase] = useState<'warp' | 'landing'>('warp');
 
-  // Mission State (Multiple Questions)
-  const [missionQuestions, setMissionQuestions] = useState<TriviaQuestion[]>([]);
+  // Mission State (Multiple Questions + Fact)
+  const [currentMission, setCurrentMission] = useState<MissionData | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [missionScore, setMissionScore] = useState(0);
   const [selectedAnswerIndex, setSelectedAnswerIndex] = useState<number | null>(null);
@@ -109,6 +111,12 @@ const App: React.FC = () => {
   // Background Music Effect
   useEffect(() => {
     playBackgroundMusic(gameState);
+    
+    // Stop speech when changing screens
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    }
   }, [gameState]);
 
   // Handle Mute Toggle
@@ -123,6 +131,35 @@ const App: React.FC = () => {
       setGameState(GameState.MENU);
   };
 
+  // --- Speech Synthesis (Text-to-Speech) ---
+  const speakText = (text: string) => {
+    if (!('speechSynthesis' in window) || isMuted) return;
+
+    window.speechSynthesis.cancel(); // Stop any current speech
+    
+    const utterance = new SpeechSynthesisUtterance(text);
+    // Find a decent english voice
+    const voices = window.speechSynthesis.getVoices();
+    const preferredVoice = voices.find(v => v.lang.includes('en') && v.name.includes('Google')) || voices[0];
+    if (preferredVoice) utterance.voice = preferredVoice;
+    
+    utterance.rate = 0.95; // Slightly slower for kids
+    utterance.pitch = 1.1; // Slightly friendlier pitch
+    
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const stopSpeaking = () => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    }
+  };
+
   // --- "Backend" Persistence (LocalStorage) ---
   useEffect(() => {
     // Load data on mount
@@ -131,7 +168,6 @@ const App: React.FC = () => {
     
     if (savedPlayer) {
       setPlayer(JSON.parse(savedPlayer));
-      // Optional: setGameState(GameState.MAP) if you want to skip menu
     }
     if (savedPlanets) {
       setPlanets(JSON.parse(savedPlanets));
@@ -191,12 +227,12 @@ const App: React.FC = () => {
     try {
         const missionConfig = getMissionConfig(player.difficulty);
         // Fetch questions based on difficulty config
-        const questionsPromise = generateTrivia(planetId, player.difficulty, missionConfig.count); 
+        const missionPromise = generateMission(planetId, player.difficulty, missionConfig.count); 
         
         // Wait for both API and Animation
-        const [questions] = await Promise.all([questionsPromise, minTravelTime]);
+        const [missionData] = await Promise.all([missionPromise, minTravelTime]);
 
-        setMissionQuestions(questions);
+        setCurrentMission(missionData);
         setCurrentQuestionIndex(0);
         setMissionScore(0);
         setFeedback(null);
@@ -207,13 +243,24 @@ const App: React.FC = () => {
         
         // Allow landing animation to play for 1.5s
         setTimeout(() => {
-            setGameState(GameState.TRIVIA);
+            // New Step: Go to Discovery (Fact) phase first
+            setGameState(GameState.DISCOVERY);
             setLoading(false);
+            
+            // Auto-read the fact for kids if not muted
+            if (!isMuted) {
+              setTimeout(() => speakText(`Welcome to ${planets.find(p => p.id === planetId)?.name}. ${missionData.fact}`), 500);
+            }
         }, 1500); 
     } catch (e) {
         setLoading(false);
         setGameState(GameState.MAP);
-        alert("Communications with the planet failed! Try again.");
+        const errorMsg = (e as Error).message;
+        if (errorMsg.includes("API Key")) {
+            alert("⚠️ SYSTEM ERROR: Google Gemini API Key is missing.\n\nPlease create a .env file in the project folder with: API_KEY=your_key_here\n\nThen restart the server.");
+        } else {
+            alert("Communications with the planet failed! The alien signal was too weak. Try again!");
+        }
     }
   };
 
@@ -227,12 +274,14 @@ const App: React.FC = () => {
   }
 
   const handleAnswer = (index: number) => {
-    if (selectedAnswerIndex !== null) return; 
+    if (selectedAnswerIndex !== null || !currentMission) return; 
     
-    const currentQ = missionQuestions[currentQuestionIndex];
+    const currentQ = currentMission.questions[currentQuestionIndex];
     setSelectedAnswerIndex(index);
     const isCorrect = index === currentQ.correctAnswerIndex;
     const rewards = getDifficultyRewards(player.difficulty);
+
+    stopSpeaking(); // Stop reading question if answered
 
     if (isCorrect) {
       setFeedback('correct');
@@ -243,6 +292,7 @@ const App: React.FC = () => {
         score: prev.score + rewards.score,
         fuel: Math.min(prev.fuel + rewards.fuelGain, 100),
       }));
+      if (!isMuted) speakText("Correct! " + currentQ.explanation);
     } else {
       setFeedback('incorrect');
       playSound('fail');
@@ -250,16 +300,20 @@ const App: React.FC = () => {
         ...prev,
         fuel: Math.max(prev.fuel - rewards.fuelLoss, 0),
       }));
+       if (!isMuted) speakText("Oh no. " + currentQ.explanation);
     }
   };
 
   const handleNextQuestion = () => {
-    if (currentQuestionIndex < missionQuestions.length - 1) {
+    if (!currentMission) return;
+    if (currentQuestionIndex < currentMission.questions.length - 1) {
         // Next Question
         setFeedback(null);
         setSelectedAnswerIndex(null);
         setCurrentQuestionIndex(prev => prev + 1);
         playSound('click');
+        
+        // Read next question automatically? Maybe annoying. Let's let them click the speaker.
     } else {
         // End of Mission Logic
         finishMission();
@@ -325,7 +379,7 @@ const App: React.FC = () => {
   );
 
   const renderHomeButton = () => {
-      if (gameState !== GameState.MAP && gameState !== GameState.TRIVIA) return null;
+      if (gameState === GameState.MENU || gameState === GameState.TRAVELING) return null;
       
       return (
         <button 
@@ -336,6 +390,53 @@ const App: React.FC = () => {
             <Home size={24} />
         </button>
       );
+  };
+
+  const renderDiscovery = () => {
+    if (!currentMission) return null;
+    const planet = planets.find(p => p.id === selectedPlanet);
+
+    return (
+        <div className="flex flex-col items-center justify-center h-screen z-10 relative px-4 animate-in fade-in duration-500">
+            <div className="max-w-2xl w-full bg-slate-900/90 backdrop-blur-xl border-2 border-blue-500/50 rounded-3xl p-8 shadow-[0_0_50px_rgba(59,130,246,0.3)] relative overflow-hidden">
+                {/* Holographic Scan Effect */}
+                <div className="absolute inset-0 bg-[linear-gradient(rgba(59,130,246,0.1)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.1)_1px,transparent_1px)] bg-[size:20px_20px] opacity-20 pointer-events-none"></div>
+                
+                <div className="flex flex-col items-center text-center relative z-10">
+                    <div className="bg-blue-600 text-white text-xs font-bold uppercase tracking-[0.2em] py-1 px-3 rounded-full mb-4 animate-pulse">
+                        Incoming Transmission
+                    </div>
+
+                    <h2 className="text-3xl md:text-4xl font-black text-white mb-2">
+                        {planet?.name} Found!
+                    </h2>
+                    <h3 className="text-xl text-blue-300 font-medium mb-8">
+                        Topic: {currentMission.topic}
+                    </h3>
+
+                    <div className="bg-blue-950/50 p-6 rounded-2xl border border-blue-400/30 mb-8 relative">
+                        <BookOpen className="absolute -top-4 -left-4 text-blue-400 bg-slate-900 p-1 rounded-full w-8 h-8 border border-blue-400" />
+                        <p className="text-lg md:text-xl text-white italic leading-relaxed">
+                            "{currentMission.fact}"
+                        </p>
+                        
+                        {/* Read Aloud Button */}
+                        <button 
+                          onClick={() => isSpeaking ? stopSpeaking() : speakText(currentMission.fact)}
+                          className="absolute bottom-2 right-2 p-2 rounded-full hover:bg-white/10 text-blue-300 transition-colors"
+                          title="Read Aloud"
+                        >
+                           {isSpeaking ? <StopCircle className="animate-pulse text-red-400" /> : <PlayCircle />}
+                        </button>
+                    </div>
+
+                    <Button onClick={() => { playSound('click'); setGameState(GameState.TRIVIA); }} size="lg" className="w-full md:w-auto animate-bounce">
+                        Start Mission <Check className="ml-2 inline" size={20} />
+                    </Button>
+                </div>
+            </div>
+        </div>
+    );
   };
   
   const renderMenu = () => (
@@ -450,8 +551,12 @@ const App: React.FC = () => {
   );
 
   const renderTrivia = () => {
-      const currentQuestion = missionQuestions[currentQuestionIndex];
+      if (!currentMission) return null;
+      const currentQuestion = currentMission.questions[currentQuestionIndex];
       if (!currentQuestion) return null;
+
+      // Find planet name
+      const planetName = planets.find(p => p.id === selectedPlanet)?.name || selectedPlanet;
 
       return (
         <div className="flex flex-col items-center justify-center h-screen z-10 relative px-4">
@@ -460,28 +565,37 @@ const App: React.FC = () => {
                  <div className="bg-slate-900/50 p-6 border-b border-white/10 flex justify-between items-center">
                     <div className="flex items-center gap-2">
                          <span className="bg-blue-600 text-xs font-bold px-2 py-1 rounded text-white uppercase tracking-wider">
-                             {selectedPlanet}
+                             {planetName}
                          </span>
                          <span className="text-slate-400 text-sm font-mono">
-                             Mission Progress: {currentQuestionIndex + 1} / {missionQuestions.length}
+                             Mission Progress: {currentQuestionIndex + 1} / {currentMission.questions.length}
                          </span>
                     </div>
                     {/* Visual indicators for progress */}
                     <div className="flex gap-1">
-                        {missionQuestions.map((_, i) => (
+                        {currentMission.questions.map((_, i) => (
                              <div key={i} className={`h-2 w-8 rounded-full ${i < currentQuestionIndex ? 'bg-green-500' : i === currentQuestionIndex ? 'bg-blue-500 animate-pulse' : 'bg-slate-700'}`}></div>
                         ))}
                     </div>
                  </div>
 
                  {/* Question */}
-                 <div className="p-8 text-center flex-grow flex flex-col justify-center">
+                 <div className="p-8 text-center flex-grow flex flex-col justify-center relative">
+                    {/* Read Aloud Button for Question */}
+                    <button 
+                      onClick={() => isSpeaking ? stopSpeaking() : speakText(currentQuestion.question)}
+                      className="absolute top-0 right-4 p-2 rounded-full hover:bg-white/10 text-blue-300 transition-colors"
+                      title="Read Question"
+                    >
+                       {isSpeaking ? <StopCircle className="animate-pulse text-red-400" /> : <PlayCircle />}
+                    </button>
+
                     <h3 className="text-2xl md:text-3xl font-bold text-white leading-tight mb-8">
                         {currentQuestion.question}
                     </h3>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
-                        {currentQuestion.options.map((option, idx) => {
+                        {currentQuestion.options.map((option: string, idx: number) => {
                             let btnVariant: 'primary' | 'secondary' | 'success' | 'danger' = 'secondary';
                             
                             // Reveal phase
@@ -528,7 +642,7 @@ const App: React.FC = () => {
                                  </p>
                              </div>
                              <Button onClick={handleNextQuestion} variant={feedback === 'correct' ? 'success' : 'primary'} className="flex-shrink-0 whitespace-nowrap">
-                                 {currentQuestionIndex < missionQuestions.length - 1 ? 'Next Question' : 'Complete Mission'}
+                                 {currentQuestionIndex < currentMission.questions.length - 1 ? 'Next Question' : 'Complete Mission'}
                              </Button>
                         </div>
                      </div>
@@ -572,9 +686,9 @@ const App: React.FC = () => {
       {gameState === GameState.MENU && renderMenu()}
       {gameState === GameState.MAP && renderMap()}
       
-      {/* Replaced renderTraveling() call with component usage */}
       {gameState === GameState.TRAVELING && <TravelingScreen travelPhase={travelPhase} targetPlanet={planets.find(p => p.id === selectedPlanet)} />}
       
+      {gameState === GameState.DISCOVERY && renderDiscovery()}
       {gameState === GameState.TRIVIA && renderTrivia()}
       {gameState === GameState.GAME_OVER && renderEndGame(false)}
       {gameState === GameState.VICTORY && renderEndGame(true)}
